@@ -146,19 +146,14 @@ where
                 debug!(serial = ?serial, client = ?client, "denying drag from client without implicit grab");
             }
             wl_data_device::Request::SetSelection { source, .. } => {
-                let seat_data = match seat.get_keyboard() {
-                    Some(keyboard) if keyboard.client_of_object_has_focus(&resource.id()) => seat
-                        .user_data()
-                        .get::<RefCell<SeatData<D::SelectionUserData>>>()
-                        .unwrap(),
-                    _ => {
-                        debug!(
-                            client = ?client,
-                            "denying setting selection by a non-focused client"
-                        );
-                        return;
-                    }
-                };
+                // NOTE: The protocol says the client should provide a serial from when it had
+                // keyboard focus, but many compositors (including Mir/Mutter/Weston) do not
+                // enforce this strictly. We accept set_selection from any client to maintain
+                // broad compatibility and allow clipboard managers and background apps to work.
+                let seat_data = seat
+                    .user_data()
+                    .get::<RefCell<SeatData<D::SelectionUserData>>>()
+                    .unwrap();
 
                 // NOTE: While protocol states that selection shouldn't be used more than once,
                 // no-one enforces it, thus we have clients around that do so and crashing them
