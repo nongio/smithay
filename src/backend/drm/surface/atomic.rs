@@ -1275,6 +1275,16 @@ impl<'a> AtomicRequest<'a> {
                     name: "alpha",
                 });
             }
+            // Set pixel blend mode to "Pre-multiplied" (1) when the plane supports it.
+            // Intel i915 Gen9+ requires this property to be set for ARGB overlay planes;
+            // without it the atomic test returns EINVAL.
+            if self.mapping.plane_prop_handle(handle, "pixel blend mode").is_ok() {
+                plane_props.insert(
+                    "pixel blend mode",
+                    property::Value::UnsignedRange(1), // 1 = Pre-multiplied
+                );
+                tracing::info!("[plane-diag] set 'pixel blend mode'=Pre-multiplied on plane {:?}", handle);
+            }
             if self.mapping.plane_prop_handle(handle, "FB_DAMAGE_CLIPS").is_ok() {
                 if let Some(damage) = config.damage_clips.as_ref() {
                     plane_props.insert("FB_DAMAGE_CLIPS", *damage);
@@ -1523,6 +1533,16 @@ impl<'a> AtomicRequest<'a> {
                     handle: handle.into(),
                     name: "alpha",
                 });
+            }
+            // Set pixel blend mode to "Pre-multiplied" (1) when the plane supports it.
+            // Intel i915 Gen9+ requires this for ARGB overlay planes; without it
+            // the atomic test returns EINVAL.
+            if let Ok(prop) = self.mapping.plane_prop_handle(handle, "pixel blend mode") {
+                self.request.add_property(
+                    handle,
+                    prop,
+                    property::Value::UnsignedRange(1), // 1 = Pre-multiplied
+                );
             }
             if let Ok(prop) = self.mapping.plane_prop_handle(handle, "FB_DAMAGE_CLIPS") {
                 if let Some(damage) = config.damage_clips.as_ref() {
