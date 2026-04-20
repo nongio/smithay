@@ -86,6 +86,9 @@ impl<A: AsFd + 'static> ExportFramebuffer<GbmBuffer> for GbmFramebufferExporter<
                         .map(Some)?
                 }
             }
+            ExportBuffer::Dmabuf(dmabuf) => {
+                framebuffer_from_dmabuf(drm, &self.gbm, dmabuf, use_opaque, true).map(Some)?
+            }
         };
         Ok(framebuffer)
     }
@@ -118,6 +121,7 @@ impl<A: AsFd + 'static> ExportFramebuffer<GbmBuffer> for GbmFramebufferExporter<
                 _ => false,
             },
             ExportBuffer::Allocator(_) => true,
+            ExportBuffer::Dmabuf(dmabuf) => self.import_node == dmabuf.node(),
         }
     }
 
@@ -126,6 +130,7 @@ impl<A: AsFd + 'static> ExportFramebuffer<GbmBuffer> for GbmFramebufferExporter<
     fn can_add_framebuffer(&self, buffer: &ExportBuffer<'_, GbmBuffer>) -> bool {
         match buffer {
             ExportBuffer::Allocator(_) => true,
+            ExportBuffer::Dmabuf(dmabuf) => self.import_node == dmabuf.node(),
         }
     }
 }

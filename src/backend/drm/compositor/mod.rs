@@ -19,7 +19,7 @@
 //! ### General
 //!
 //! First the element has to provide a [`UnderlyingStorage`] which can be exported as a drm framebuffer.
-//! Currently this is limited to wayland buffers, but may be extended in the future.
+//! This is supported for wayland buffers and dmabufs.
 //! This module provides a default exporter based on [`gbm`] which should fit most use-cases.
 //!
 //! If a certain combination of elements works can only be determined by asking the driver by submitting
@@ -151,7 +151,7 @@ use crate::backend::renderer::{
 use crate::{
     backend::{
         allocator::{
-            dmabuf::{AsDmabuf, Dmabuf},
+            dmabuf::{AsDmabuf, Dmabuf, WeakDmabuf},
             format::{get_opaque, has_alpha},
             gbm::{GbmAllocator, GbmBuffer, GbmBufferFlags, GbmDevice},
             Allocator, Buffer, Slot, Swapchain,
@@ -210,6 +210,7 @@ enum ScanoutBuffer<B: Buffer> {
     Wayland(crate::backend::renderer::utils::Buffer),
     Swapchain(Arc<Slot<B>>),
     Cursor(Arc<GbmBuffer>),
+    Dmabuf(Dmabuf, Option<Arc<dyn std::any::Any + Send + Sync>>),
 }
 
 impl<B: Buffer> Clone for ScanoutBuffer<B> {
@@ -218,6 +219,7 @@ impl<B: Buffer> Clone for ScanoutBuffer<B> {
             Self::Wayland(arg0) => Self::Wayland(arg0.clone()),
             Self::Swapchain(arg0) => Self::Swapchain(arg0.clone()),
             Self::Cursor(arg0) => Self::Cursor(arg0.clone()),
+            Self::Dmabuf(arg0, arg1) => Self::Dmabuf(arg0.clone(), arg1.clone()),
         }
     }
 }
@@ -244,6 +246,7 @@ impl<B: Buffer> ScanoutBuffer<B> {
         match storage {
             UnderlyingStorage::Wayland(buffer) => Some(Self::Wayland(buffer.clone())),
             UnderlyingStorage::Memory { .. } => None,
+            UnderlyingStorage::Dmabuf(dmabuf, keepalive) => Some(Self::Dmabuf(dmabuf.clone(), keepalive.clone())),
         }
     }
 }
@@ -335,6 +338,7 @@ impl<B: Buffer, F: Framebuffer> Framebuffer for DrmScanoutBuffer<B, F> {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 enum ElementFramebufferCacheBuffer {
     Wayland(wayland_server::Weak<WlBuffer>),
+    Dmabuf(WeakDmabuf),
 }
 
 impl ElementFramebufferCacheBuffer {
@@ -343,6 +347,7 @@ impl ElementFramebufferCacheBuffer {
         match storage {
             UnderlyingStorage::Wayland(buffer) => Some(Self::Wayland(buffer.downgrade())),
             UnderlyingStorage::Memory { .. } => None,
+            UnderlyingStorage::Dmabuf(dmabuf, _) => Some(Self::Dmabuf(dmabuf.weak())),
         }
     }
 }
@@ -369,6 +374,7 @@ impl ElementFramebufferCacheKey {
     fn is_alive(&self) -> bool {
         match self.buffer {
             ElementFramebufferCacheBuffer::Wayland(ref buffer) => buffer.is_alive(),
+            ElementFramebufferCacheBuffer::Dmabuf(ref dmabuf) => dmabuf.upgrade().is_some(),
         }
     }
 }
@@ -676,7 +682,8 @@ impl<B: Buffer, F: Framebuffer> FrameState<B, F> {
 
         let res = surface.test_state(self.build_planes(surface, supports_fencing, true), allow_modeset);
 
-        if res.is_err() {
+        if let Err(ref e) = res {
+            trace!("atomic test failed for plane {:?}: {:?}", plane, e);
             // test failed, restore previous state
             *self.plane_state_mut(plane).unwrap() = backup;
         } else {
@@ -3306,6 +3313,7 @@ where
                         }
                     }
                 }
+                UnderlyingStorage::Dmabuf(..) => None,
             }?;
 
             let ret = cursor_buffer
@@ -3465,7 +3473,10 @@ where
         // We can only try to do direct scan-out for element that provide a underlying storage
         let underlying_storage = element
             .underlying_storage(renderer)
-            .ok_or(ExportBufferError::NoUnderlyingStorage)?;
+            .ok_or_else(|| {
+                tracing::trace!("[cfg-diag] {:?} no underlying_storage", element_id);
+                ExportBufferError::NoUnderlyingStorage
+            })?;
 
         let export_buffer = ExportBuffer::from_underlying_storage(&underlying_storage)
             .ok_or(ExportBufferError::Unsupported)?;
@@ -3515,10 +3526,7 @@ where
             let fb = self
                 .framebuffer_exporter
                 .add_framebuffer(self.surface.device_fd(), export_buffer, allow_opaque_fallback)
-                .map_err(|err| {
-                    trace!("failed to add framebuffer: {:?}", err);
-                    ExportBufferError::ExportFailed
-                })
+                .map_err(|_err| ExportBufferError::ExportFailed)
                 .and_then(|fb| {
                     fb.map(|fb| CachedDrmFramebuffer::new(DrmFramebuffer::Exporter(fb)))
                         .ok_or(ExportBufferError::Unsupported)
@@ -3712,7 +3720,9 @@ where
         R: Renderer,
         E: RenderElement<R>,
     {
+        tracing::trace!("[overlay-diag] entered for {:?} kind={:?}", element.id(), element.kind());
         if !frame_flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT) {
+            tracing::trace!("[overlay-diag] {:?} rejected: ALLOW_OVERLAY_PLANE_SCANOUT not set", element.id());
             return Err(None);
         }
 
@@ -3824,12 +3834,14 @@ where
                 return Err(None);
             }
 
-            // if the element overlaps with an element on
-            // the primary plane and is not an underlay
-            // we can not assign it to any overlay plane
-            if overlaps_with_primary_plane_element && !is_underlay {
+            // if the element overlaps with an element on the primary plane
+            // we can not assign it to any overlay plane UNLESS:
+            //   - it is an underlay (caller already validated opacity above), or
+            //   - the overlay candidate is fully opaque (primary content under
+            //     it is invisible regardless, so the overlap is harmless)
+            if overlaps_with_primary_plane_element && !is_underlay && !element_is_opaque {
                 trace!(
-                    "skipping direct scan-out on {:?} with zpos {:?}, element {:?} overlaps with element on primary plane", plane.handle, plane.zpos, element_id,
+                    "skipping direct scan-out on {:?} with zpos {:?}, element {:?} overlaps with element on primary plane and is not opaque", plane.handle, plane.zpos, element_id,
                 );
                 return Err(None);
             }
@@ -4111,6 +4123,7 @@ fn apply_underlying_storage_transform(
             }
         }
         UnderlyingStorage::Memory { .. } => element_transform,
+        UnderlyingStorage::Dmabuf(..) => element_transform,
     }
 }
 
@@ -4269,6 +4282,7 @@ where
 
             copy_to_bo(memory, memory.stride(), memory.size().h)
         }
+        UnderlyingStorage::Dmabuf(..) => false,
     }
 }
 
