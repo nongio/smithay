@@ -1070,6 +1070,23 @@ impl X11Wm {
         self.servertime_counter.is_some()
     }
 
+    /// Set _NET_ACTIVE_WINDOW on the root window to the given X11 window.
+    ///
+    /// This must be called when the compositor gives keyboard focus to an
+    /// XWayland client so that _NET_ACTIVE_WINDOW reflects the actual focused
+    /// client window (not the WM selection window).
+    pub fn set_active_window(&self, window: X11Window) -> Result<(), ConnectionError> {
+        self.conn.change_property32(
+            PropMode::REPLACE,
+            self.screen.root,
+            self.atoms._NET_ACTIVE_WINDOW,
+            AtomEnum::WINDOW,
+            &[window],
+        )?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
     /// Raises a window in the internal X11 state
     ///
     /// Needs to be called to match raising of windows inside the compositor to keep the stacking order
@@ -1673,6 +1690,11 @@ where
                     }
 
                     drop(_guard);
+                    // Seed net_state from the window's `_NET_WM_STATE` property, which a
+                    // client may have set before mapping to request an initial state
+                    // (e.g. Wine/Unity games requesting fullscreen pre-map). Without this
+                    // the request is silently lost and the game hangs at a black screen.
+                    let _ = surface.update_net_wm_state();
                     state.map_window_request(xwm_id, surface);
                 }
             }
