@@ -1075,6 +1075,23 @@ impl X11Wm {
         self.servertime_counter.is_some()
     }
 
+    /// Set _NET_ACTIVE_WINDOW on the root window to the given X11 window.
+    ///
+    /// This must be called when the compositor gives keyboard focus to an
+    /// XWayland client so that _NET_ACTIVE_WINDOW reflects the actual focused
+    /// client window (not the WM selection window).
+    pub fn set_active_window(&self, window: X11Window) -> Result<(), ConnectionError> {
+        self.conn.change_property32(
+            PropMode::REPLACE,
+            self.screen.root,
+            self.atoms._NET_ACTIVE_WINDOW,
+            AtomEnum::WINDOW,
+            &[window],
+        )?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
     /// Raises a window in the internal X11 state
     ///
     /// Needs to be called to match raising of windows inside the compositor to keep the stacking order

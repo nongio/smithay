@@ -1531,6 +1531,62 @@ impl X11Surface {
         }
     }
 
+    /// Directly set the X11 input focus to this window (`XSetInputFocus`, reverting
+    /// to [`InputFocus::NONE`]), WITHOUT sending a `WM_TAKE_FOCUS` client message.
+    ///
+    /// This is the "force focus" primitive — the analogue of
+    /// `wlr_xwayland_surface_activate`. It assigns the X11 input focus
+    /// unconditionally, *including* to [`WmInputModel::GloballyActive`] clients, for
+    /// which ICCCM §4.1.7 says the window manager should instead *offer* focus via
+    /// [`Self::offer_focus`] and let the client take it.
+    ///
+    /// That offer is the correct default, and [`KeyboardTarget::enter`] performs it
+    /// automatically based on [`Self::input_model`]. But some Globally-Active clients
+    /// mishandle `WM_TAKE_FOCUS` — notably Unity/Proton (DXVK) games such as Cuphead,
+    /// and games run under gamescope — by re-asserting fullscreen / a mode-set that
+    /// stalls their render loop. For those, forcing the input focus directly delivers
+    /// keyboard input without invoking that handler. gamescope's window manager
+    /// focuses every game window this way (`XSetInputFocus`, no `WM_TAKE_FOCUS`).
+    ///
+    /// This updates only the **X11** input focus; it does **not** deliver
+    /// `wl_keyboard` events. The compositor must still set the seat keyboard focus to
+    /// this surface (e.g. [`KeyboardHandle::set_focus`]) for XWayland to route keys.
+    ///
+    /// [`KeyboardHandle::set_focus`]: crate::input::keyboard::KeyboardHandle::set_focus
+    pub fn set_input_focus(&self) -> Result<(), ConnectionError> {
+        if let Some(conn) = self.conn.upgrade() {
+            conn.set_input_focus(InputFocus::NONE, self.window, x11rb::CURRENT_TIME)?;
+            let _ = conn.flush();
+        }
+        Ok(())
+    }
+
+    /// Offer keyboard focus to this window by sending it a `WM_TAKE_FOCUS` client
+    /// message, letting the client set the X11 input focus itself (ICCCM §4.1.7).
+    ///
+    /// This is the "offer focus" primitive — the analogue of
+    /// `wlr_xwayland_surface_offer_focus`. It is the ICCCM-correct way to focus
+    /// clients that advertise `WM_TAKE_FOCUS` ([`WmInputModel::GloballyActive`] and
+    /// [`WmInputModel::LocallyActive`]): the WM does not force the focus, the client
+    /// decides. For clients that mishandle `WM_TAKE_FOCUS`, force the focus with
+    /// [`Self::set_input_focus`] instead.
+    ///
+    /// Like [`Self::set_input_focus`], this affects only the X11 focus protocol and
+    /// does not deliver `wl_keyboard` events; set the seat keyboard focus separately.
+    pub fn offer_focus(&self) -> Result<(), ConnectionError> {
+        if let Some(conn) = self.conn.upgrade() {
+            let event = ClientMessageEvent::new(
+                32,
+                self.window,
+                self.atoms.WM_PROTOCOLS,
+                [self.atoms.WM_TAKE_FOCUS, x11rb::CURRENT_TIME, 0, 0, 0],
+            );
+            conn.send_event(false, self.window, EventMask::NO_EVENT, event)?;
+            let _ = conn.flush();
+        }
+        Ok(())
+    }
+
     pub(super) fn update_properties(&self) -> Result<(), ConnectionError> {
         self.update_title()?;
         self.update_class()?;
@@ -1903,6 +1959,41 @@ impl X11Surface {
         state.window_type = atoms
             .and_then(|atoms| Some(atoms.value32()?.collect::<Vec<_>>()))
             .unwrap_or_default();
+        Ok(())
+    }
+
+    /// Read the window's current `_NET_WM_STATE` property into `net_state`.
+    ///
+    /// The WM normally owns `_NET_WM_STATE`, but per EWMH a client may set it
+    /// *before* mapping to request an initial state — Wine/Unity games request
+    /// fullscreen this way (XChangeProperty before XMapWindow, not a client
+    /// message). Seeding `net_state` from the property at map time lets the WM
+    /// honor that initial state (so `is_fullscreen()`/`is_maximized()` report it)
+    /// and prevents a later `change_net_state` (e.g. focus) from clobbering the
+    /// client's request. Without this the game blocks forever waiting for the WM
+    /// to confirm `_NET_WM_STATE_FULLSCREEN` and hangs at a black screen.
+    pub(super) fn update_net_wm_state(&self) -> Result<(), ConnectionError> {
+        let conn = self.conn.upgrade().ok_or(ConnectionError::UnknownError)?;
+        let atoms = match conn
+            .get_property(
+                false,
+                self.window,
+                self.atoms._NET_WM_STATE,
+                AtomEnum::ATOM,
+                0,
+                1024,
+            )?
+            .reply_unchecked()
+        {
+            Ok(atoms) => atoms,
+            Err(ConnectionError::ParseError(_)) => return Ok(()),
+            Err(err) => return Err(err),
+        };
+
+        if let Some(atoms) = atoms.and_then(|atoms| Some(atoms.value32()?.collect::<Vec<_>>())) {
+            let mut state = self.state.lock().unwrap();
+            state.net_state = atoms.into_iter().collect();
+        }
         Ok(())
     }
 
