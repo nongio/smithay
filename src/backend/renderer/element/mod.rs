@@ -28,6 +28,7 @@ use std::{
 use wayland_server::{backend::ObjectId, Resource};
 
 use crate::{
+    backend::allocator::dmabuf::Dmabuf,
     output::{Output, WeakOutput},
     utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Transform},
 };
@@ -206,6 +207,10 @@ pub enum UnderlyingStorage<'a> {
     Wayland(&'a Buffer),
     /// A memory backed buffer
     Memory(&'a memory::MemoryBuffer),
+    /// A dmabuf, with an optional keepalive Arc that the compositor holds until
+    /// the buffer is no longer scanned out. Dropping the Arc signals the producer
+    /// that the slot is safe to recycle (analogous to wl_buffer.release).
+    Dmabuf(&'a Dmabuf, Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>),
 }
 
 /// Defines the (optional) reason why a [`Element`] was selected for
