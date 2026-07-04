@@ -3972,13 +3972,17 @@ where
             }
 
             // if the element overlaps with an element on the primary plane
-            // we can not assign it to any overlay plane UNLESS:
-            //   - it is an underlay (caller already validated opacity above), or
-            //   - the overlay candidate is fully opaque (primary content under
-            //     it is invisible regardless, so the overlap is harmless)
-            if overlaps_with_primary_plane_element && !is_underlay && !element_is_opaque {
+            // we can not assign it to any overlay plane (unless it is an
+            // underlay, whose opacity the caller already validated).
+            //
+            // Elements are assigned front-to-back, so every element already
+            // on the primary plane is IN FRONT of this candidate — an
+            // overlay assignment would stack the candidate above content
+            // that must draw over it (z-order inversion). Opacity of the
+            // candidate does not change that.
+            if overlaps_with_primary_plane_element && !is_underlay {
                 trace!(
-                    "skipping direct scan-out on {:?} with zpos {:?}, element {:?} overlaps with element on primary plane and is not opaque", plane.handle, plane.zpos, element_id,
+                    "skipping direct scan-out on {:?} with zpos {:?}, element {:?} overlaps with element on primary plane", plane.handle, plane.zpos, element_id,
                 );
                 return Err(None);
             }
