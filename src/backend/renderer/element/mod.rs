@@ -260,7 +260,11 @@ pub enum UnderlyingStorage<'a> {
     /// A dmabuf, with an optional keepalive Arc that the compositor holds until
     /// the buffer is no longer scanned out. Dropping the Arc signals the producer
     /// that the slot is safe to recycle (analogous to wl_buffer.release).
-    Dmabuf(&'a Dmabuf, Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>),
+    ///
+    /// Owned rather than borrowed: `Dmabuf` is internally an `Arc`, so the
+    /// clone is cheap and the producer does not have to keep a stable
+    /// reference alive for the lifetime of the storage value.
+    Dmabuf(Dmabuf, Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>),
 }
 
 /// Defines the (optional) reason why a [`Element`] was selected for
