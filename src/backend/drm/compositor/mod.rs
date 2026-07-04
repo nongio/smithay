@@ -1881,7 +1881,12 @@ where
 
             if element_visible_area == 0 {
                 // No need to draw a completely hidden element
-                trace!("skipping completely obscured element {:?}", element.id());
+                debug!(
+                    "skipping completely obscured element {:?} geo={:?} accumulated_opaque={:?}",
+                    element.id(),
+                    element_geometry,
+                    opaque_regions
+                );
 
                 // We allow multiple instance of a single element, so do not
                 // override the state if we already have one
@@ -1921,6 +1926,13 @@ where
             // color and remove the element completely. This will make the element directly above
             // this element the last element, enabling direct scan-out on the primary plane for it.
             if element_is_opaque && element_output_geometry.contains_rect(output_geometry) {
+                debug!(
+                    "element {:?} is opaque and spans the output - all below will be skipped (geo={:?} kind={:?} alpha={:?})",
+                    element.id(),
+                    element_geometry,
+                    element.kind(),
+                    element.alpha()
+                );
                 let element_color = element.underlying_storage(renderer).and_then(|storage| {
                     if let UnderlyingStorage::Wayland(buffer) = storage {
                         single_pixel_buffer::get_single_pixel_buffer(buffer)
@@ -2771,6 +2783,131 @@ where
     /// Returns a reference to the underlying drm surface
     pub fn surface(&self) -> &DrmSurface {
         &self.surface
+    }
+
+    /// Test whether `overlays` — a list of `(plane, dmabuf, dst_rect)` triples —
+    /// can all be scanned out simultaneously by the hardware.  Uses
+    /// `DRM_MODE_ATOMIC_TEST_ONLY` so no pixels are drawn and no page-flip is
+    /// triggered.  Returns `true` when the kernel accepts the configuration.
+    ///
+    /// Typical use: run this once before calling `render_frame` to determine
+    /// which render tier the current hardware/buffer combination supports.
+    ///
+    /// `primary` is the buffer for the primary plane (typically the background);
+    /// including it is required on i915 Gen12+ for bandwidth validation — without it
+    /// the driver cannot compute the full pipe budget and returns EINVAL.
+    /// `overlays` are the overlay planes to test.
+    ///
+    /// **Legacy DRM caveat**: on non-atomic devices the underlying `test_state`
+    /// has no way to probe without triggering a modeset, so it returns `Ok(())`
+    /// unconditionally. This method will therefore return `true` on legacy
+    /// drivers regardless of whether scanout would actually succeed.
+    pub fn test_overlay_planes(
+        &self,
+        primary: Option<(&Dmabuf, Rectangle<i32, Physical>)>,
+        overlays: &[(plane::Handle, &Dmabuf, Rectangle<i32, Physical>)],
+    ) -> bool {
+        if primary.is_none() && overlays.is_empty() {
+            return true;
+        }
+        let mut fbs: Vec<<F as ExportFramebuffer<A::Buffer>>::Framebuffer> = Vec::new();
+        let mut states: Vec<super::PlaneState<'static>> = Vec::new();
+
+        // Always include the primary plane so i915 can validate the full pipe bandwidth.
+        if let Some((primary_dmabuf, primary_dst)) = primary {
+            let size = primary_dmabuf.size();
+            let fb = match self.framebuffer_exporter.add_framebuffer(
+                self.surface.device_fd(),
+                ExportBuffer::Dmabuf(primary_dmabuf),
+                false,
+            ) {
+                Ok(Some(fb)) => fb,
+                Ok(None) => {
+                    trace!("test_overlay_planes: no fb for primary plane");
+                    return false;
+                }
+                Err(err) => {
+                    trace!("test_overlay_planes: fb export failed for primary: {:?}", err);
+                    return false;
+                }
+            };
+            let fb_handle = *fb.as_ref();
+            fbs.push(fb);
+            let Some(primary_plane) = self.surface.planes().primary.first() else {
+                trace!("test_overlay_planes: surface has no primary plane");
+                return false;
+            };
+            states.push(super::PlaneState {
+                handle: primary_plane.handle,
+                config: Some(super::PlaneConfig {
+                    src: Rectangle::new(
+                        (0.0, 0.0).into(),
+                        (size.w as f64, size.h as f64).into(),
+                    ),
+                    dst: primary_dst,
+                    transform: Transform::Normal,
+                    alpha: 1.0,
+                    damage_clips: None,
+                    fb: fb_handle,
+                    fence: None,
+                }),
+            });
+        }
+
+        for (handle, dmabuf, dst) in overlays {
+            let size = dmabuf.size();
+            let fb = match self.framebuffer_exporter.add_framebuffer(
+                self.surface.device_fd(),
+                ExportBuffer::Dmabuf(dmabuf),
+                false,
+            ) {
+                Ok(Some(fb)) => fb,
+                Ok(None) => {
+                    trace!("test_overlay_planes: exporter returned no fb for plane {:?}", handle);
+                    return false;
+                }
+                Err(err) => {
+                    trace!("test_overlay_planes: fb export failed for plane {:?}: {:?}", handle, err);
+                    return false;
+                }
+            };
+            let fb_handle = *fb.as_ref();
+            fbs.push(fb);
+            states.push(super::PlaneState {
+                handle: *handle,
+                config: Some(super::PlaneConfig {
+                    src: Rectangle::new(
+                        (0.0, 0.0).into(),
+                        (size.w as f64, size.h as f64).into(),
+                    ),
+                    dst: *dst,
+                    transform: Transform::Normal,
+                    alpha: 1.0,
+                    damage_clips: None,
+                    fb: fb_handle,
+                    fence: None,
+                }),
+            });
+        }
+        match self.surface.test_state(states, false) {
+            Ok(()) => true,
+            Err(err) => {
+                // Log at debug so the caller can understand why the test failed.
+                // DRM errno is inside AccessError::source (an io::Error); its raw_os_error()
+                // maps to: ERANGE=34 (bandwidth), EINVAL=22 (geometry/format), ENOMEM=12.
+                let errno = if let crate::backend::drm::error::Error::Access(ref ae) = err {
+                    ae.source.raw_os_error()
+                } else {
+                    None
+                };
+                debug!(
+                    planes = overlays.len(),
+                    ?errno,
+                    "test_overlay_planes: test_state rejected"
+                );
+                false
+            }
+        }
     }
 
     /// Get the format of the underlying swapchain
