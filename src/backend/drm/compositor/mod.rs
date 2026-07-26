@@ -247,7 +247,9 @@ impl<B: Buffer> ScanoutBuffer<B> {
         match storage {
             UnderlyingStorage::Wayland(buffer) => Some(Self::Wayland(buffer.clone())),
             UnderlyingStorage::Memory { .. } => None,
-            UnderlyingStorage::Dmabuf(dmabuf, keepalive) => Some(Self::Dmabuf(dmabuf.clone(), keepalive.clone())),
+            UnderlyingStorage::Dmabuf(dmabuf, keepalive) => {
+                Some(Self::Dmabuf(dmabuf.clone(), keepalive.clone()))
+            }
         }
     }
 }
@@ -2840,10 +2842,7 @@ where
             states.push(super::PlaneState {
                 handle: primary_plane.handle,
                 config: Some(super::PlaneConfig {
-                    src: Rectangle::new(
-                        (0.0, 0.0).into(),
-                        (size.w as f64, size.h as f64).into(),
-                    ),
+                    src: Rectangle::new((0.0, 0.0).into(), (size.w as f64, size.h as f64).into()),
                     dst: primary_dst,
                     transform: Transform::Normal,
                     alpha: 1.0,
@@ -2863,11 +2862,18 @@ where
             ) {
                 Ok(Some(fb)) => fb,
                 Ok(None) => {
-                    trace!("test_overlay_planes: exporter returned no fb for plane {:?}", handle);
+                    trace!(
+                        "test_overlay_planes: exporter returned no fb for plane {:?}",
+                        handle
+                    );
                     return false;
                 }
                 Err(err) => {
-                    trace!("test_overlay_planes: fb export failed for plane {:?}: {:?}", handle, err);
+                    trace!(
+                        "test_overlay_planes: fb export failed for plane {:?}: {:?}",
+                        handle,
+                        err
+                    );
                     return false;
                 }
             };
@@ -2876,10 +2882,7 @@ where
             states.push(super::PlaneState {
                 handle: *handle,
                 config: Some(super::PlaneConfig {
-                    src: Rectangle::new(
-                        (0.0, 0.0).into(),
-                        (size.w as f64, size.h as f64).into(),
-                    ),
+                    src: Rectangle::new((0.0, 0.0).into(), (size.w as f64, size.h as f64).into()),
                     dst: *dst,
                     transform: Transform::Normal,
                     alpha: 1.0,
@@ -3624,12 +3627,10 @@ where
         let element_id = element.id();
 
         // We can only try to do direct scan-out for element that provide a underlying storage
-        let underlying_storage = element
-            .underlying_storage(renderer)
-            .ok_or_else(|| {
-                tracing::trace!("[cfg-diag] {:?} no underlying_storage", element_id);
-                ExportBufferError::NoUnderlyingStorage
-            })?;
+        let underlying_storage = element.underlying_storage(renderer).ok_or_else(|| {
+            tracing::trace!("[cfg-diag] {:?} no underlying_storage", element_id);
+            ExportBufferError::NoUnderlyingStorage
+        })?;
 
         let export_buffer = ExportBuffer::from_underlying_storage(&underlying_storage)
             .ok_or(ExportBufferError::Unsupported)?;
@@ -3870,9 +3871,16 @@ where
         R: Renderer,
         E: RenderElement<R>,
     {
-        tracing::trace!("[overlay-diag] entered for {:?} kind={:?}", element.id(), element.kind());
+        tracing::trace!(
+            "[overlay-diag] entered for {:?} kind={:?}",
+            element.id(),
+            element.kind()
+        );
         if !frame_flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT) {
-            tracing::trace!("[overlay-diag] {:?} rejected: ALLOW_OVERLAY_PLANE_SCANOUT not set", element.id());
+            tracing::trace!(
+                "[overlay-diag] {:?} rejected: ALLOW_OVERLAY_PLANE_SCANOUT not set",
+                element.id()
+            );
             return Err(None);
         }
 

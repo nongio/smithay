@@ -28,6 +28,16 @@ pub struct PropMapping {
     pub connectors: HashMap<connector::Handle, HashMap<String, property::Handle>>,
     pub crtcs: HashMap<crtc::Handle, HashMap<String, property::Handle>>,
     pub planes: HashMap<plane::Handle, HashMap<String, property::Handle>>,
+    /// Raw value of the "pixel blend mode" enum that selects premultiplied
+    /// blending, per plane that exposes the property.
+    ///
+    /// The numbers behind the enum are driver-defined — i915 for instance orders
+    /// them `Pre-multiplied=0, Coverage=1, None=2` — so they have to be resolved
+    /// from the property's own enum list. Guessing one risks selecting
+    /// "Coverage", which blends straight-alpha and therefore multiplies alpha in
+    /// a second time for our premultiplied buffers, darkening everything drawn
+    /// at partial alpha.
+    pub plane_blend_premultiplied: HashMap<plane::Handle, u64>,
 }
 
 impl PropMapping {
@@ -77,6 +87,14 @@ impl PropMapping {
                 name,
             })
             .copied()
+    }
+
+    /// The value to write to this plane's "pixel blend mode" property to get
+    /// premultiplied blending, or `None` if the plane has no such property (or
+    /// its enum does not list "Pre-multiplied", in which case the driver default
+    /// — premultiplied per the DRM docs — is the safer choice).
+    pub(crate) fn plane_premultiplied_blend(&self, handle: plane::Handle) -> Option<u64> {
+        self.plane_blend_premultiplied.get(&handle).copied()
     }
 }
 
@@ -134,6 +152,7 @@ impl AtomicDrmDevice {
         map_props(&dev.fd, res_handles.connectors(), &mut mapping.connectors)?;
         map_props(&dev.fd, res_handles.crtcs(), &mut mapping.crtcs)?;
         map_props(&dev.fd, &planes, &mut mapping.planes)?;
+        mapping.plane_blend_premultiplied = map_plane_blend_modes(&dev.fd, &mapping.planes);
 
         dev.old_state = old_state;
         trace!("Mapping: {:#?}", mapping);
@@ -303,6 +322,37 @@ where
                 source,
             })
         })
+}
+
+/// Resolve, for every plane exposing "pixel blend mode", the raw enum value that
+/// selects premultiplied blending.
+///
+/// The enum is defined by the driver, so the value cannot be hardcoded: i915
+/// orders it `Pre-multiplied=0, Coverage=1, None=2`, other drivers need not.
+/// Planes whose enum does not name "Pre-multiplied" are left out — the property
+/// then stays at its driver default, which the DRM docs define as premultiplied.
+fn map_plane_blend_modes<D>(
+    fd: &D,
+    planes: &HashMap<plane::Handle, HashMap<String, property::Handle>>,
+) -> HashMap<plane::Handle, u64>
+where
+    D: DevPath + ControlDevice,
+{
+    planes
+        .iter()
+        .filter_map(|(plane, props)| {
+            let info = fd.get_property(*props.get("pixel blend mode")?).ok()?;
+            let property::ValueType::Enum(values) = info.value_type() else {
+                return None;
+            };
+            let (_, enums) = values.values();
+            let value = enums
+                .iter()
+                .find(|e| e.name().to_bytes() == b"Pre-multiplied")?
+                .value();
+            Some((*plane, value))
+        })
+        .collect()
 }
 
 /// Create a mapping of property names and handles for given handles of a given drm resource type.
