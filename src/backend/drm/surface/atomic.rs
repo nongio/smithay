@@ -1260,15 +1260,22 @@ impl<'a> AtomicRequest<'a> {
                     name: "alpha",
                 });
             }
-            // Set pixel blend mode to "Pre-multiplied" (1) when the plane supports it.
-            // Intel i915 Gen9+ requires this property to be set for ARGB overlay planes;
-            // without it the atomic test returns EINVAL.
-            if self.mapping.plane_prop_handle(handle, "pixel blend mode").is_ok() {
+            // Select premultiplied blending when the plane supports it. Intel
+            // i915 Gen9+ requires this property to be set for ARGB overlay
+            // planes; without it the atomic test returns EINVAL. The raw value
+            // comes from the property's enum (resolved once per device) — the
+            // numbering is driver-defined, and picking "Coverage" by mistake
+            // blends our premultiplied buffers with straight alpha, darkening
+            // anything drawn at partial alpha.
+            if let Some(premultiplied) = self.mapping.plane_premultiplied_blend(handle) {
                 plane_props.insert(
                     "pixel blend mode",
-                    property::Value::UnsignedRange(1), // 1 = Pre-multiplied
+                    property::Value::UnsignedRange(premultiplied),
                 );
-                tracing::info!("[plane-diag] set 'pixel blend mode'=Pre-multiplied on plane {:?}", handle);
+                tracing::trace!(
+                    "set 'pixel blend mode'=Pre-multiplied ({premultiplied}) on plane {:?}",
+                    handle
+                );
             }
             if self.mapping.plane_prop_handle(handle, "FB_DAMAGE_CLIPS").is_ok() {
                 if let Some(damage) = config.damage_clips.as_ref() {
@@ -1519,15 +1526,15 @@ impl<'a> AtomicRequest<'a> {
                     name: "alpha",
                 });
             }
-            // Set pixel blend mode to "Pre-multiplied" (1) when the plane supports it.
-            // Intel i915 Gen9+ requires this for ARGB overlay planes; without it
-            // the atomic test returns EINVAL.
-            if let Ok(prop) = self.mapping.plane_prop_handle(handle, "pixel blend mode") {
-                self.request.add_property(
-                    handle,
-                    prop,
-                    property::Value::UnsignedRange(1), // 1 = Pre-multiplied
-                );
+            // Select premultiplied blending when the plane supports it (see the
+            // debug-build variant above for why the value is looked up and not
+            // hardcoded).
+            if let (Ok(prop), Some(premultiplied)) = (
+                self.mapping.plane_prop_handle(handle, "pixel blend mode"),
+                self.mapping.plane_premultiplied_blend(handle),
+            ) {
+                self.request
+                    .add_property(handle, prop, property::Value::UnsignedRange(premultiplied));
             }
             if let Ok(prop) = self.mapping.plane_prop_handle(handle, "FB_DAMAGE_CLIPS") {
                 if let Some(damage) = config.damage_clips.as_ref() {
