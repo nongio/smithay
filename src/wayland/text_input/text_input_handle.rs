@@ -19,6 +19,14 @@ pub(crate) struct TextInput {
     instances: Vec<Instance>,
     focus: Option<WlSurface>,
     active_text_input_id: Option<ObjectId>,
+    /// The last cursor rectangle a client committed, with the surface it is
+    /// relative to. Kept after the text input is disabled or focus moves on:
+    /// a compositor placing something at the caret — a character picker, say —
+    /// only asks once the user has already taken the keyboard elsewhere.
+    cursor_rectangle: Option<(WlSurface, Rectangle<i32, Logical>)>,
+    /// The caret set since the last commit, not yet applied. Text input is
+    /// double buffered: a rectangle only counts once committed.
+    pending_cursor_rectangle: Option<(WlSurface, Rectangle<i32, Logical>)>,
 }
 
 impl TextInput {
@@ -89,6 +97,18 @@ impl TextInputHandle {
         {
             instance.serial += 1
         }
+    }
+
+    /// The last text cursor rectangle a client reported, and the surface it is
+    /// relative to.
+    ///
+    /// Retained after the text input is disabled and after focus moves away,
+    /// so a compositor can still place something at the caret once the
+    /// keyboard has gone elsewhere. `None` until some client has reported one:
+    /// `set_cursor_rectangle` is optional, and many clients — most terminals,
+    /// anything under XWayland — never send it.
+    pub fn cursor_rectangle(&self) -> Option<(WlSurface, Rectangle<i32, Logical>)> {
+        self.inner.lock().unwrap().cursor_rectangle.clone()
     }
 
     /// Return the currently focused surface.
@@ -206,6 +226,32 @@ where
         // Always increment serial to not desync with clients.
         if matches!(request, zwp_text_input_v3::Request::Commit) {
             data.handle.increment_serial(resource);
+        }
+
+        // Track the caret before anything else, because the guard below drops
+        // every request when no input method is running — and this is the only
+        // place a client ever says where its text cursor is. A compositor may
+        // want to put something of its own there (a character picker, a
+        // completion list) on a desktop with no input method at all, so the
+        // position is kept whether or not an IME is there to receive it.
+        match &request {
+            zwp_text_input_v3::Request::SetCursorRectangle { x, y, width, height } => {
+                if let Some(focus) = data
+                    .handle
+                    .focus()
+                    .filter(|focus| focus.id().same_client_as(&resource.id()))
+                {
+                    let rect = Rectangle::new((*x, *y).into(), (*width, *height).into());
+                    data.handle.inner.lock().unwrap().pending_cursor_rectangle = Some((focus, rect));
+                }
+            }
+            zwp_text_input_v3::Request::Commit => {
+                let mut inner = data.handle.inner.lock().unwrap();
+                if let Some(pending) = inner.pending_cursor_rectangle.take() {
+                    inner.cursor_rectangle = Some(pending);
+                }
+            }
+            _ => {}
         }
 
         // Discard requsets without any active input method instance.
