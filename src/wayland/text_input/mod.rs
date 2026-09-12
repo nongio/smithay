@@ -160,9 +160,9 @@ where
                     },
                 );
                 handle.add_instance(&instance);
-                if input_method_handle.has_instance() {
-                    handle.enter();
-                }
+                // A client binding lazily, once its surface already has the
+                // keyboard, still has to be told it has focus.
+                handle.enter_instance(&instance);
             }
             zwp_text_input_manager_v3::Request::Destroy => {
                 // Nothing to do
