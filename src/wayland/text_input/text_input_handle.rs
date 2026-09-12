@@ -85,6 +85,17 @@ impl TextInputHandle {
         });
     }
 
+    /// Send `enter` to one instance if the focused surface belongs to its
+    /// client — for an instance created after focus was already given.
+    pub(super) fn enter_instance(&self, instance: &ZwpTextInputV3) {
+        let inner = self.inner.lock().unwrap();
+        if let Some(surface) = inner.focus.as_ref().filter(|surface| surface.is_alive()) {
+            if instance.id().same_client_as(&surface.id()) {
+                instance.enter(surface);
+            }
+        }
+    }
+
     fn increment_serial(&self, text_input: &ZwpTextInputV3) {
         if let Some(instance) = self
             .inner
@@ -274,6 +285,21 @@ where
                 let mut inner = self.handle.inner.lock().unwrap();
                 if let Some(pending) = inner.pending_cursor_rectangle.take() {
                     inner.cursor_rectangle = Some(pending);
+                }
+                // Acknowledge the commit at once. The protocol requires a
+                // `done` per commit, and a client holds every further request
+                // — including its next caret position — until the `done` for
+                // the last one arrives; an IME that has nothing to say (or no
+                // IME at all) would otherwise leave it waiting for ever. An
+                // IME's own reply comes as a further `done` with the same
+                // serial, which the client applies as usual.
+                if let Some(serial) = inner
+                    .instances
+                    .iter()
+                    .find(|instance| instance.instance == *resource)
+                    .map(|instance| instance.serial)
+                {
+                    resource.done(serial);
                 }
             }
             _ => {}

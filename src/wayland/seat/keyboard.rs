@@ -253,11 +253,11 @@ pub(crate) fn enter_internal<D: SeatHandler + 'static>(
     // text-input global bound due to clients doing lazy global binding.
     text_input.set_focus(Some(surface.clone()));
 
-    // Notify on `enter` once we have an actual IME, or while the compositor is itself acting
-    // as the input method for this seat.
-    if input_method.has_instance() || text_input.compositor_input_method() {
-        text_input.enter();
-    }
+    // Tell the text input it has focus whether or not an IME is running: a
+    // protocol-abiding client (Chromium, GTK) sends nothing — not even where
+    // its caret is — until it has seen `enter`, and the compositor may want
+    // that caret for itself.
+    text_input.enter();
 }
 
 impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
@@ -283,10 +283,8 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
         if input_method.has_instance() {
             input_method.deactivate_input_method(state);
         }
-        // Send `leave` for a real IME or while the compositor is acting as the input method.
-        if input_method.has_instance() || text_input.compositor_input_method() {
-            text_input.leave();
-        }
+        // Paired with the unconditional `enter` above.
+        text_input.leave();
 
         text_input.set_focus(None);
     }
