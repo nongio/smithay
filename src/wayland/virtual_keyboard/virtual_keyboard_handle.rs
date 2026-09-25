@@ -9,20 +9,15 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboar
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::{
     self, ZwpVirtualKeyboardV1,
 };
-use wayland_server::{
-    Client, DataInit, DisplayHandle, Resource,
-    protocol::wl_keyboard::{KeyState, KeymapFormat},
-};
+use wayland_server::{Client, DataInit, DisplayHandle, Resource, protocol::wl_keyboard::KeymapFormat};
 use xkbcommon::xkb;
 
-use crate::input::keyboard::{KeyboardTarget, KeymapFile, ModifiersState};
+use crate::backend::input::{InputTime, KeyState, Keycode};
+use crate::input::keyboard::{KeyboardTarget, KeymapFile, KeysymHandle, ModifiersState, Xkb};
 use crate::{
     input::{Seat, SeatHandler},
     utils::SERIAL_COUNTER,
-    wayland::{
-        Dispatch2,
-        seat::{WaylandFocus, keyboard::for_each_focused_kbds},
-    },
+    wayland::{Dispatch2, seat::WaylandFocus},
 };
 
 #[derive(Debug, Default)]
@@ -33,7 +28,9 @@ pub(crate) struct VirtualKeyboard {
 struct VirtualKeyboardState {
     keymap: KeymapFile,
     mods: ModifiersState,
-    state: xkb::State,
+    /// The virtual keyboard's own keymap and modifier state: keys are resolved
+    /// against it, never against the seat's keymap.
+    xkb: Mutex<Xkb>,
 }
 
 impl fmt::Debug for VirtualKeyboardState {
@@ -41,7 +38,7 @@ impl fmt::Debug for VirtualKeyboardState {
         f.debug_struct("VirtualKeyboardState")
             .field("keymap", &self.keymap)
             .field("mods", &self.mods)
-            .field("state", &self.state.get_raw_ptr())
+            .field("xkb", &self.xkb)
             .finish()
     }
 }
@@ -102,22 +99,39 @@ where
 
                 // Ensure virtual keyboard's keymap is active.
                 let keyboard_handle = self.seat.get_keyboard().unwrap();
-                let mut internal = keyboard_handle.arc.internal.lock().unwrap();
-                let focus = internal.focus.as_mut().map(|(focus, _)| focus);
-                keyboard_handle.send_keymap(user_data, &focus, &vk_state.keymap, vk_state.mods);
+                let focus = {
+                    let mut internal = keyboard_handle.arc.internal.lock().unwrap();
+                    let focus = internal.focus.as_mut().map(|(focus, _)| focus);
+                    keyboard_handle.send_keymap(user_data, &focus, &vk_state.keymap, vk_state.mods);
+                    // Delivered with the seat keyboard's lock released: the focus may
+                    // move the keyboard focus in response to the key.
+                    internal.focus.as_ref().map(|(focus, _)| focus.clone())
+                };
 
-                if let Some(wl_surface) = focus.and_then(|f| f.wl_surface()) {
-                    for_each_focused_kbds(&self.seat, &wl_surface, |kbd| {
-                        // This should be wl_keyboard::KeyState, but the protocol does not state
-                        // the parameter is an enum.
-                        let key_state = if state == 1 {
-                            KeyState::Pressed
-                        } else {
-                            KeyState::Released
-                        };
-
-                        kbd.key(SERIAL_COUNTER.next_serial().0, time, key, key_state);
-                    });
+                // Deliver through the focus target so it reaches every kind of focus
+                // the compositor knows, not only wl_surface ones. The key is resolved
+                // against the virtual keyboard's keymap, which the focused client has
+                // just been sent as well.
+                //
+                // This should be wl_keyboard::KeyState, but the protocol does not state
+                // the parameter is an enum.
+                let key_state = if state == 1 {
+                    KeyState::Pressed
+                } else {
+                    KeyState::Released
+                };
+                if let Some(focus) = focus {
+                    // Virtual keyboard keys are evdev codes; xkb keycodes are offset by 8.
+                    let keycode = Keycode::new(key + 8);
+                    let handle = KeysymHandle::new(&vk_state.xkb, keycode);
+                    focus.key(
+                        &self.seat,
+                        user_data,
+                        handle,
+                        key_state,
+                        SERIAL_COUNTER.next_serial(),
+                        InputTime::from_millis(time),
+                    );
                 }
             }
             zwp_virtual_keyboard_v1::Request::Modifiers {
@@ -137,10 +151,12 @@ where
                 };
 
                 // Update virtual keyboard's modifier state.
-                state
-                    .state
-                    .update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
-                state.mods.update_with(&state.state);
+                {
+                    let mut xkb = state.xkb.lock().unwrap();
+                    xkb.state_mut()
+                        .update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+                    state.mods.update_with(xkb.state_mut());
+                }
 
                 // Ensure virtual keyboard's keymap is active.
                 let keyboard_handle = self.seat.get_keyboard().unwrap();
@@ -205,6 +221,6 @@ where
     inner.state = Some(VirtualKeyboardState {
         mods,
         keymap: KeymapFile::new(&new_keymap),
-        state: xkb::State::new(&new_keymap),
+        xkb: Mutex::new(Xkb::from_keymap(context, new_keymap)),
     });
 }

@@ -140,6 +140,20 @@ pub struct Xkb {
 }
 
 impl Xkb {
+    /// Wrap a compiled keymap together with a fresh state for it.
+    pub(crate) fn from_keymap(context: xkb::Context, keymap: xkb::Keymap) -> Self {
+        Self {
+            state: xkb::State::new(&keymap),
+            keymap,
+            context,
+        }
+    }
+
+    /// The xkbcommon state, for updating it.
+    pub(crate) fn state_mut(&mut self) -> &mut xkb::State {
+        &mut self.state
+    }
+
     /// The xkbcommon context.
     ///
     /// # Safety
@@ -467,6 +481,11 @@ impl fmt::Debug for KeysymHandle<'_> {
 }
 
 impl<'a> KeysymHandle<'a> {
+    /// A handle resolving `keycode` against `xkb`.
+    pub(crate) fn new(xkb: &'a Mutex<Xkb>, keycode: Keycode) -> Self {
+        Self { xkb, keycode }
+    }
+
     /// Get the reference to the xkb state.
     pub fn xkb(&self) -> &Mutex<Xkb> {
         self.xkb
