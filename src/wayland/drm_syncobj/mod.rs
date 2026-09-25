@@ -40,7 +40,6 @@
 
 use std::{
     cell::RefCell,
-    os::unix::io::AsFd,
     sync::{Arc, Weak},
 };
 use tracing::warn;
@@ -63,19 +62,7 @@ use crate::{
     wayland::{Dispatch2, GlobalData, GlobalDispatch2},
 };
 
-mod sync_point;
-pub use sync_point::*;
-
-/// Test if DRM device supports `syncobj_eventfd`.
-// Similar to test used in Mutter
-pub fn supports_syncobj_eventfd(device: &DrmDeviceFd) -> bool {
-    // Pass device as placeholder for eventfd as well, since `drm_ffi` requires
-    // a valid fd.
-    match drm_ffi::syncobj::eventfd(device.as_fd(), 0, 0, device.as_fd(), false) {
-        Ok(_) => unreachable!(),
-        Err(err) => err.kind() == std::io::ErrorKind::NotFound,
-    }
-}
+pub use crate::backend::drm::sync::*;
 
 /// Handler trait for DRM syncobj protocol.
 pub trait DrmSyncobjHandler {
@@ -124,7 +111,7 @@ impl Cacheable for DrmSyncobjCachedState {
 pub struct DrmSyncobjState {
     global: GlobalId,
     import_device: Option<DrmDeviceFd>,
-    known_timelines: Vec<Weak<DrmTimelineInner>>,
+    known_timelines: Vec<Weak<crate::backend::drm::sync::DrmTimelineInner>>,
 }
 
 impl DrmSyncobjState {
@@ -257,12 +244,13 @@ fn commit_hook<D: DrmSyncobjHandler>(_data: &mut D, _dh: &DisplayHandle, surface
                 } else if let (Some(acquire), Some(release)) =
                     (pending.acquire_point.as_ref(), pending.release_point.as_ref())
                 {
-                    if acquire.timeline == release.timeline && release.point <= acquire.point {
+                    if acquire.timeline() == release.timeline() && release.point() <= acquire.point() {
                         syncobj_surface.post_error(
                             wp_linux_drm_syncobj_surface_v1::Error::ConflictingPoints,
                             format!(
                                 "release point {} is not greater than acquire point {}",
-                                release.point, acquire.point
+                                release.point(),
+                                acquire.point()
                             ),
                         );
                     }
@@ -434,14 +422,14 @@ where
                     return;
                 };
 
-                let sync_point = DrmSyncPoint {
-                    timeline: timeline
+                let sync_point = DrmSyncPoint::new(
+                    timeline
                         .data::<DrmSyncobjTimelineData>()
                         .unwrap()
                         .timeline
                         .clone(),
-                    point: ((point_hi as u64) << 32) + (point_lo as u64),
-                };
+                    ((point_hi as u64) << 32) + (point_lo as u64),
+                );
                 with_states(&surface, |states| {
                     let mut cached = states.cached_state.get::<DrmSyncobjCachedState>();
                     let cached_state = cached.pending();
@@ -461,14 +449,14 @@ where
                     return;
                 };
 
-                let sync_point = DrmSyncPoint {
-                    timeline: timeline
+                let sync_point = DrmSyncPoint::new(
+                    timeline
                         .data::<DrmSyncobjTimelineData>()
                         .unwrap()
                         .timeline
                         .clone(),
-                    point: ((point_hi as u64) << 32) + (point_lo as u64),
-                };
+                    ((point_hi as u64) << 32) + (point_lo as u64),
+                );
                 with_states(&surface, |states| {
                     let mut cached = states.cached_state.get::<DrmSyncobjCachedState>();
                     let cached_state = cached.pending();

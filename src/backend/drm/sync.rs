@@ -1,3 +1,5 @@
+//! DRM syncobj timelines and points
+
 use calloop::generic::Generic;
 use calloop::{EventSource, Interest, Mode, Poll, PostAction, Readiness, Token, TokenFactory};
 use drm::control::Device;
@@ -11,18 +13,19 @@ use std::{
     },
 };
 
-use crate::backend::drm::{DrmDeviceFd, WeakDrmDeviceFd};
+use super::{DrmDeviceFd, WeakDrmDeviceFd};
 use crate::backend::renderer::sync::{Fence, Interrupted};
+#[cfg(feature = "wayland_frontend")]
 use crate::wayland::compositor::{Blocker, BlockerState};
 
 #[derive(Debug)]
-pub(super) struct DrmTimelineInner {
+pub(crate) struct DrmTimelineInner {
     timeline_fd: OwnedFd,
     dev_ctx: Mutex<DrmTimelineDeviceSpecific>,
 }
 
 impl DrmTimelineInner {
-    pub(super) fn update_device(&self, device: &DrmDeviceFd) -> io::Result<()> {
+    pub(crate) fn update_device(&self, device: &DrmDeviceFd) -> io::Result<()> {
         let mut ctx = self.dev_ctx.lock().unwrap();
         let mut new = DrmTimelineDeviceSpecific::import(self.timeline_fd.as_fd(), device)?;
         for (point, eventfd) in ctx
@@ -37,7 +40,7 @@ impl DrmTimelineInner {
         Ok(())
     }
 
-    pub(super) fn invalidate(&self) {
+    pub(crate) fn invalidate(&self) {
         self.dev_ctx.lock().unwrap().invalidate()
     }
 }
@@ -73,7 +76,7 @@ impl DrmTimelineDeviceSpecific {
 
 /// DRM timeline syncobj
 #[derive(Clone, Debug)]
-pub struct DrmTimeline(pub(super) Arc<DrmTimelineInner>);
+pub struct DrmTimeline(pub(crate) Arc<DrmTimelineInner>);
 
 impl PartialEq for DrmTimeline {
     fn eq(&self, other: &Self) -> bool {
@@ -108,11 +111,16 @@ impl DrmTimeline {
 /// Point on a DRM timeline syncobj
 #[derive(Clone, Debug)]
 pub struct DrmSyncPoint {
-    pub(super) timeline: DrmTimeline,
-    pub(super) point: u64,
+    timeline: DrmTimeline,
+    point: u64,
 }
 
 impl DrmSyncPoint {
+    /// A point on the given timeline.
+    pub fn new(timeline: DrmTimeline, point: u64) -> Self {
+        Self { timeline, point }
+    }
+
     /// Borrow the [`DrmTimeline`] this point lives on.
     pub fn timeline(&self) -> &DrmTimeline {
         &self.timeline
@@ -327,6 +335,7 @@ pub struct DrmSyncPointBlocker {
     signal: Arc<AtomicBool>,
 }
 
+#[cfg(feature = "wayland_frontend")]
 impl Blocker for DrmSyncPointBlocker {
     fn state(&self) -> BlockerState {
         if self.signal.load(Ordering::SeqCst) {
@@ -334,5 +343,16 @@ impl Blocker for DrmSyncPointBlocker {
         } else {
             BlockerState::Pending
         }
+    }
+}
+
+/// Test if DRM device supports `syncobj_eventfd`.
+// Similar to test used in Mutter
+pub fn supports_syncobj_eventfd(device: &DrmDeviceFd) -> bool {
+    // Pass device as placeholder for eventfd as well, since `drm_ffi` requires
+    // a valid fd.
+    match drm_ffi::syncobj::eventfd(device.as_fd(), 0, 0, device.as_fd(), false) {
+        Ok(_) => unreachable!(),
+        Err(err) => err.kind() == std::io::ErrorKind::NotFound,
     }
 }

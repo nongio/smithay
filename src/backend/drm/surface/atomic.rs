@@ -1283,10 +1283,7 @@ impl<'a> AtomicRequest<'a> {
             // blends our premultiplied buffers with straight alpha, darkening
             // anything drawn at partial alpha.
             if let Some(premultiplied) = self.mapping.plane_premultiplied_blend(handle) {
-                plane_props.insert(
-                    "pixel blend mode",
-                    property::Value::UnsignedRange(premultiplied),
-                );
+                plane_props.insert("pixel blend mode", property::Value::UnsignedRange(premultiplied));
                 tracing::trace!(
                     "set 'pixel blend mode'=Pre-multiplied ({premultiplied}) on plane {:?}",
                     handle

@@ -2871,8 +2871,7 @@ where
                 Err(err) => {
                     trace!(
                         "test_overlay_planes: fb export failed for plane {:?}: {:?}",
-                        handle,
-                        err
+                        handle, err
                     );
                     return false;
                 }

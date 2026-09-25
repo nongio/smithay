@@ -83,6 +83,7 @@ pub mod gbm;
 pub mod output;
 
 mod surface;
+pub mod sync;
 
 use std::sync::Once;
 

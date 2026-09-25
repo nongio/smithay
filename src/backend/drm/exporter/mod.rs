@@ -10,7 +10,7 @@ use std::{
 use wayland_server::protocol::wl_buffer::WlBuffer;
 
 use crate::backend::{
-    allocator::{dmabuf::Dmabuf, Buffer},
+    allocator::{Buffer, dmabuf::Dmabuf},
     renderer::element::UnderlyingStorage,
 };
 
