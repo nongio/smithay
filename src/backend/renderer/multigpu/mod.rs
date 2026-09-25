@@ -3926,3 +3926,56 @@ where
             .map_err(Error::Render)
     }
 }
+
+/// Marker for a [`GraphicsApi`] whose renderers cannot import EGL (`wl_drm`) buffers.
+///
+/// With `use_system_lib` enabled, [`ImportAll`](super::ImportAll) requires
+/// [`ImportEgl`](super::ImportEgl). Implementing this marker gives the
+/// [`MultiRenderer`] of such an api an [`ImportEgl`](super::ImportEgl)
+/// implementation that reports EGL buffers as unsupported, so clients fall
+/// back to `linux-dmabuf` or `wl_shm`.
+#[cfg(all(
+    feature = "wayland_frontend",
+    feature = "backend_egl",
+    feature = "use_system_lib"
+))]
+pub trait EglImportUnsupported: GraphicsApi {}
+
+#[cfg(all(
+    feature = "wayland_frontend",
+    feature = "backend_egl",
+    feature = "use_system_lib"
+))]
+impl<R: EglImportUnsupported, T: GraphicsApi> super::ImportEgl for MultiRenderer<'_, '_, R, T>
+where
+    R: 'static,
+    R::Error: 'static,
+    T::Error: 'static,
+    <R::Device as ApiDevice>::Renderer: Bind<Dmabuf> + ExportMem + ImportDma + ImportMem,
+    <T::Device as ApiDevice>::Renderer: ImportDma + ImportMem,
+    <<R::Device as ApiDevice>::Renderer as RendererSuper>::TextureId: Clone + Send,
+    <<R::Device as ApiDevice>::Renderer as RendererSuper>::Error: 'static,
+    <<T::Device as ApiDevice>::Renderer as RendererSuper>::Error: 'static,
+{
+    fn bind_wl_display(
+        &mut self,
+        _display: &wayland_server::DisplayHandle,
+    ) -> Result<(), crate::backend::egl::Error> {
+        Err(crate::backend::egl::Error::NoEGLDisplayBound)
+    }
+
+    fn unbind_wl_display(&mut self) {}
+
+    fn egl_reader(&self) -> Option<&crate::backend::egl::display::EGLBufferReader> {
+        None
+    }
+
+    fn import_egl_buffer(
+        &mut self,
+        _buffer: &wl_buffer::WlBuffer,
+        _surface: Option<&SurfaceData>,
+        _damage: &[Rectangle<i32, BufferCoords>],
+    ) -> Result<<Self as RendererSuper>::TextureId, <Self as RendererSuper>::Error> {
+        Err(Error::ImportFailed)
+    }
+}
