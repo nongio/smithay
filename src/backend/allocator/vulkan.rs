@@ -36,18 +36,18 @@ use crate::{
         allocator::{dmabuf::DmabufFlags, format::has_alpha},
         renderer::vulkan::VulkanRenderer,
         vulkan::{
+            PhysicalDevice,
             device::{Device, DeviceError, QueueType},
             image::{Error as ImageError, ImageUsageFlags, VulkanImage},
             version::Version,
-            PhysicalDevice,
         },
     },
     utils::{Buffer as BufferCoord, Size},
 };
 
 use super::{
-    dmabuf::{AsDmabuf, Dmabuf, MAX_PLANES},
     Allocator, Buffer,
+    dmabuf::{AsDmabuf, Dmabuf, MAX_PLANES},
 };
 
 /// Error type for [`VulkanAllocator`].
@@ -328,7 +328,6 @@ impl AsDmabuf for VulkanImage {
             };
             builder.add_plane(
                 fd.try_clone().or(Err(ExportError::Failed))?,
-                idx,
                 layout.offset as u32,
                 layout.row_pitch as u32,
             );

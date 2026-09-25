@@ -1,5 +1,5 @@
 use std::{
-    ffi::{c_void, CStr},
+    ffi::{CStr, c_void},
     pin::Pin,
 };
 
@@ -13,7 +13,7 @@ use ash::{
     },
 };
 
-use crate::backend::vulkan::{version::Version, PhysicalDevice};
+use crate::backend::vulkan::{PhysicalDevice, version::Version};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
@@ -101,7 +101,7 @@ impl Features {
 
     // SAFETY: You must not move the struct
     pub unsafe fn vk(self: &mut Pin<Box<Self>>) -> &mut PhysicalDeviceFeatures2<'static> {
-        &mut self.as_mut().get_unchecked_mut().features
+        unsafe { &mut self.as_mut().get_unchecked_mut().features }
     }
 }
 

@@ -3,22 +3,22 @@
 use crate::{
     backend::{
         allocator::{
-            dmabuf::{Dmabuf, WeakDmabuf},
-            format::{get_bpp, FormatSet},
             Format, Fourcc,
+            dmabuf::{Dmabuf, WeakDmabuf},
+            format::FormatSet,
         },
-        drm::{sync::DrmSyncPoint, DrmDeviceFd},
+        drm::{DrmDeviceFd, sync::DrmSyncPoint},
         renderer::{
-            vulkan::shaders::{ClearPushConstants, TexPushConstants},
             Bind, ContextId, ExportMem, Frame, ImportDma, ImportMem, Renderer, RendererSuper, Texture,
             TextureMapping,
+            vulkan::shaders::{ClearPushConstants, TexPushConstants},
         },
         vulkan::{
+            PhysicalDevice, UnsupportedProperty,
             device::{Device, DeviceError, QueueType, WeakDevice},
             format::{get_drm_format, get_vk_format, known_formats},
             image::{Error as ImageError, ImageUsageFlags, VulkanImage},
             version::Version,
-            PhysicalDevice, UnsupportedProperty,
         },
     },
     reexports::drm::node::DrmNode,
@@ -30,15 +30,15 @@ use ash::vk::{
     Extent3D, Fence, Filter, FormatFeatureFlags, HostImageCopyFlagsEXT, ImageAspectFlags, ImageLayout,
     ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange, ImageToMemoryCopyEXT, MemoryMapFlags,
     MemoryPropertyFlags, MemoryToImageCopyEXT, Offset3D, PipelineBindPoint, PipelineStageFlags,
-    Result as VkResult, SamplerAddressMode, SamplerCreateFlags, SamplerCreateInfo, SamplerMipmapMode,
-    SemaphoreWaitInfo, ShaderStageFlags, SubmitInfo, TimelineSemaphoreSubmitInfo, QUEUE_FAMILY_IGNORED,
+    QUEUE_FAMILY_IGNORED, Result as VkResult, SamplerAddressMode, SamplerCreateFlags, SamplerCreateInfo,
+    SamplerMipmapMode, SemaphoreWaitInfo, ShaderStageFlags, SubmitInfo, TimelineSemaphoreSubmitInfo,
 };
 use gbm::Modifier;
 use indexmap::IndexSet;
 
 use std::{collections::HashMap, ffi::CStr, fmt, ptr::NonNull};
 
-use super::{sync::SyncPoint, Color32F};
+use super::{Color32F, sync::SyncPoint};
 
 //mod buffer;
 mod capabilities;
@@ -639,6 +639,10 @@ pub struct VulkanFrame<'frame, 'buffer> {
 }
 
 impl Frame for VulkanFrame<'_, '_> {
+    fn output_size(&self) -> Size<i32, Physical> {
+        self.size
+    }
+
     type Error = Error;
     type TextureId = VulkanImage;
 
@@ -905,11 +909,7 @@ impl Frame for VulkanFrame<'_, '_> {
     fn finish(self) -> Result<SyncPoint, Self::Error> {
         if let Some(point) = self.last_sequence {
             if let Some(timeline) = self.renderer.timeline.drm.as_ref() {
-                Ok(DrmSyncPoint {
-                    timeline: timeline.clone(),
-                    point,
-                }
-                .into())
+                Ok(DrmSyncPoint::new(timeline.clone(), point).into())
             } else {
                 // TODO: vulkan syncpoint
                 while let Err(VkResult::TIMEOUT) = unsafe {
