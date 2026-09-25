@@ -34,7 +34,6 @@ use tracing::instrument;
 use crate::{
     backend::{
         allocator::{dmabuf::DmabufFlags, format::has_alpha},
-        renderer::vulkan::VulkanRenderer,
         vulkan::{
             PhysicalDevice,
             device::{Device, DeviceError, QueueType},
@@ -150,7 +149,11 @@ impl VulkanAllocator {
         Ok(allocator)
     }
 
-    pub fn from_renderer(renderer: &VulkanRenderer, usage: ImageUsageFlags) -> Self {
+    #[cfg(feature = "renderer_vulkan")]
+    pub fn from_renderer(
+        renderer: &crate::backend::renderer::vulkan::VulkanRenderer,
+        usage: ImageUsageFlags,
+    ) -> Self {
         VulkanAllocator {
             default_usage: usage,
             phd: renderer.phd.clone(),
