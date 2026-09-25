@@ -44,7 +44,6 @@ use super::{Color32F, sync::SyncPoint};
 mod capabilities;
 mod cmds;
 mod device;
-mod image;
 mod shaders;
 mod sync;
 

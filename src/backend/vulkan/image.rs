@@ -460,3 +460,17 @@ impl Drop for ImageInner {
         }
     }
 }
+
+impl crate::backend::renderer::Texture for VulkanImage {
+    fn width(&self) -> u32 {
+        VulkanImage::width(self)
+    }
+
+    fn height(&self) -> u32 {
+        VulkanImage::height(self)
+    }
+
+    fn format(&self) -> Option<Fourcc> {
+        self.drm.map(|format| format.code)
+    }
+}
