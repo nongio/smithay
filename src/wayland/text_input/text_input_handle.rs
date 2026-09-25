@@ -272,7 +272,7 @@ where
         // position is kept whether or not an IME is there to receive it.
         match &request {
             zwp_text_input_v3::Request::SetCursorRectangle { x, y, width, height } => {
-                if let Some(focus) = data
+                if let Some(focus) = self
                     .handle
                     .focus()
                     .filter(|focus| focus.id().same_client_as(&resource.id()))
