@@ -1962,41 +1962,6 @@ impl X11Surface {
         Ok(())
     }
 
-    /// Read the window's current `_NET_WM_STATE` property into `net_state`.
-    ///
-    /// The WM normally owns `_NET_WM_STATE`, but per EWMH a client may set it
-    /// *before* mapping to request an initial state — Wine/Unity games request
-    /// fullscreen this way (XChangeProperty before XMapWindow, not a client
-    /// message). Seeding `net_state` from the property at map time lets the WM
-    /// honor that initial state (so `is_fullscreen()`/`is_maximized()` report it)
-    /// and prevents a later `change_net_state` (e.g. focus) from clobbering the
-    /// client's request. Without this the game blocks forever waiting for the WM
-    /// to confirm `_NET_WM_STATE_FULLSCREEN` and hangs at a black screen.
-    pub(super) fn update_net_wm_state(&self) -> Result<(), ConnectionError> {
-        let conn = self.conn.upgrade().ok_or(ConnectionError::UnknownError)?;
-        let atoms = match conn
-            .get_property(
-                false,
-                self.window,
-                self.atoms._NET_WM_STATE,
-                AtomEnum::ATOM,
-                0,
-                1024,
-            )?
-            .reply_unchecked()
-        {
-            Ok(atoms) => atoms,
-            Err(ConnectionError::ParseError(_)) => return Ok(()),
-            Err(err) => return Err(err),
-        };
-
-        if let Some(atoms) = atoms.and_then(|atoms| Some(atoms.value32()?.collect::<Vec<_>>())) {
-            let mut state = self.state.lock().unwrap();
-            state.net_state = atoms.into_iter().collect();
-        }
-        Ok(())
-    }
-
     fn read_window_property_string(&self, atom: impl Into<Atom>) -> Result<Option<String>, ConnectionError> {
         let conn = self.conn.upgrade().ok_or(ConnectionError::UnknownError)?;
         let reply = match conn
