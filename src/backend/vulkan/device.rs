@@ -56,10 +56,6 @@ impl Device {
         fallback_to_graphics: bool,
     ) -> Result<Self, DeviceError> {
         let extension_pointers = extensions.iter().copied().map(CStr::as_ptr).collect::<Vec<_>>();
-        for ptr in &extension_pointers {
-            println!("{:x} {:?}", (*ptr) as usize, unsafe { CStr::from_ptr(*ptr) });
-        }
-
         let queue_families = unsafe {
             phd.instance()
                 .handle()

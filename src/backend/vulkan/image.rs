@@ -1,4 +1,8 @@
-use std::{fmt, io, os::fd::IntoRawFd, sync::Arc};
+use std::{
+    fmt, io,
+    os::fd::{AsRawFd, IntoRawFd},
+    sync::Arc,
+};
 
 pub use ash::vk::ImageUsageFlags;
 use ash::vk::{self, ImageTiling, MemoryPropertyFlags};
@@ -164,8 +168,12 @@ impl VulkanImage {
         let mut modifier_list = modifiers.as_deref().map(|modifiers| {
             vk::ImageDrmFormatModifierListCreateInfoEXT::default().drm_format_modifiers(modifiers)
         });
+        // A modifier list or an explicit dmabuf layout both describe the
+        // image in modifier terms; only a plain allocation picks by tiling.
         let tiling = modifiers
             .as_deref()
+            .map(|_| ())
+            .or(dmabuf.map(|_| ()))
             .map(|_| vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
             .unwrap_or_else(|| {
                 if linear {
@@ -277,28 +285,54 @@ impl VulkanImage {
 
         // Allocate image memory
         let memory_reqs = unsafe { device.vk().get_image_memory_requirements(inner.image) };
-        // TODO: Memory type index
-        let mut alloc_create_info = vk::MemoryAllocateInfo::default().allocation_size(memory_reqs.size);
 
-        let mut mem_bits = None;
-        for (i, types) in device
-            .memory_properties()
-            .memory_types_as_slice()
-            .iter()
-            .enumerate()
-        {
-            if memory_reqs.memory_type_bits & (i as u32) != 0
-                && types.property_flags.contains(MemoryPropertyFlags::DEVICE_LOCAL)
-            {
-                alloc_create_info = alloc_create_info.memory_type_index(i as u32);
-                mem_bits = Some(types.property_flags.clone());
-                break;
+        // An imported dmabuf can only be bound to the memory types its
+        // exporter allows, on top of what the image itself requires.
+        let import_fd = dmabuf
+            .map(|dmabuf| {
+                // TODO: Distinct planes. See `new_from_dmabuf`
+                dmabuf
+                    .handles()
+                    .next()
+                    .unwrap()
+                    .try_clone_to_owned()
+                    .map_err(Error::DmabufFdError)
+            })
+            .transpose()?;
+        let mut type_bits = memory_reqs.memory_type_bits;
+        if let Some(fd) = import_fd.as_ref() {
+            let ext = device
+                .vk_khr_external_memory_fd()
+                .ok_or(Error::UnsupportedDmabuf)?;
+            let mut props = vk::MemoryFdPropertiesKHR::default();
+            unsafe {
+                ext.get_memory_fd_properties(
+                    vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+                    fd.as_raw_fd(),
+                    &mut props,
+                )
             }
+            .map_err(Error::VulkanAllocate)?;
+            type_bits &= props.memory_type_bits;
         }
 
-        let Some(mem_bits) = mem_bits else {
+        let memory_types = device.memory_properties().memory_types_as_slice();
+        let candidate = |i: usize| type_bits & (1u32 << i) != 0;
+        let chosen = (0..memory_types.len())
+            .find(|&i| {
+                candidate(i)
+                    && memory_types[i]
+                        .property_flags
+                        .contains(MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+            .or_else(|| (0..memory_types.len()).find(|&i| candidate(i)));
+        let Some(chosen) = chosen else {
             return Err(Error::NoMemoryAvailable);
         };
+        let mem_bits = memory_types[chosen].property_flags;
+        let mut alloc_create_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(memory_reqs.size)
+            .memory_type_index(chosen as u32);
 
         let mut import_memory_info: vk::ImportMemoryFdInfoKHR<'_>;
         let mut memory_export_info: vk::ExportMemoryAllocateInfo<'_>;
@@ -315,16 +349,11 @@ impl VulkanImage {
             alloc_create_info = alloc_create_info.push_next(&mut memory_export_info);
         }
 
-        if let Some(dmabuf) = dmabuf {
-            // TODO: Distinct planes. See `new_from_dmabuf`
-            let handle = dmabuf.handles().next().unwrap();
-
+        if let Some(fd) = import_fd {
+            // Vulkan owns the descriptor once the allocation succeeds.
             import_memory_info = vk::ImportMemoryFdInfoKHR::default()
                 .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
-                .fd(handle
-                    .try_clone_to_owned()
-                    .map_err(Error::DmabufFdError)?
-                    .into_raw_fd());
+                .fd(fd.into_raw_fd());
             alloc_create_info = alloc_create_info.push_next(&mut import_memory_info);
         }
 
