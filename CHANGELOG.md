@@ -126,6 +126,7 @@ is used for timestamps for synthesized events.
 ### Additions
 
 - `SeatState::new_wl_seat_with_filter` creates a `wl_seat` global advertised only to the clients a filter accepts.
+- `ForeignToplevelListState::set_toplevel_filter` tells each client only of the toplevels a filter accepts for it; `new_toplevel_unannounced` and `announce_toplevel` let the compositor attach user data the filter reads first.
 
 - Add `WmWindowProperty::Other` to forward unrecognized X11 property changes to the compositor.
 

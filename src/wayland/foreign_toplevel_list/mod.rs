@@ -291,6 +291,9 @@ pub struct ForeignToplevelListState {
     toplevels: Vec<ForeignToplevelWeakHandle>,
     list_instances: Vec<ExtForeignToplevelListV1>,
     dh: DisplayHandle,
+    /// Which clients are told of which toplevels; every client of every
+    /// toplevel when `None`.
+    toplevel_filter: Option<Arc<dyn Fn(&Client, &ForeignToplevelHandle) -> bool + Send + Sync>>,
 }
 
 impl ForeignToplevelListState {
@@ -324,7 +327,27 @@ impl ForeignToplevelListState {
             toplevels: Vec::new(),
             list_instances: Vec::new(),
             dh: dh.clone(),
+            toplevel_filter: None,
         }
+    }
+
+    /// Tell each client only of the toplevels `filter` accepts for it.
+    ///
+    /// A client that is not told of a toplevel never gets a handle for it:
+    /// not when it binds the list, and not when the toplevel appears. A
+    /// compositor that scopes what an automation client may see keeps the
+    /// rest of the desktop out of its list this way.
+    pub fn set_toplevel_filter<F>(&mut self, filter: F)
+    where
+        F: Fn(&Client, &ForeignToplevelHandle) -> bool + Send + Sync + 'static,
+    {
+        self.toplevel_filter = Some(Arc::new(filter));
+    }
+
+    fn tells(&self, client: &Client, handle: &ForeignToplevelHandle) -> bool {
+        self.toplevel_filter
+            .as_ref()
+            .map_or(true, |filter| filter(client, handle))
     }
 
     /// [ExtForeignToplevelListV1] GlobalId getter
@@ -365,6 +388,21 @@ impl ForeignToplevelListState {
     where
         D: ForeignToplevelListHandler + Dispatch<ExtForeignToplevelHandleV1, ForeignToplevelHandle>,
     {
+        let handle = self.new_toplevel_unannounced(title, app_id, identifier);
+        self.announce_toplevel::<D>(&handle);
+        handle
+    }
+
+    /// Create a [`ForeignToplevelHandle`] without telling any client of it
+    /// yet, so the compositor can attach [`ForeignToplevelHandle::user_data`]
+    /// a toplevel filter (see [`Self::set_toplevel_filter`]) reads before
+    /// [`Self::announce_toplevel`] tells the clients.
+    pub fn new_toplevel_unannounced(
+        &mut self,
+        title: impl Into<String>,
+        app_id: impl Into<String>,
+        identifier: impl Into<String>,
+    ) -> ForeignToplevelHandle {
         let identifier = identifier.into();
         assert!(
             !identifier.is_empty() && identifier.len() <= 32 && identifier.is_ascii(),
@@ -378,11 +416,22 @@ impl ForeignToplevelListState {
             identifier,
             Vec::with_capacity(self.list_instances.len()),
         );
+        self.toplevels.push(handle.downgrade());
+        handle
+    }
 
+    /// Tell the clients of a toplevel made with [`Self::new_toplevel_unannounced`].
+    pub fn announce_toplevel<D>(&mut self, handle: &ForeignToplevelHandle)
+    where
+        D: ForeignToplevelListHandler + Dispatch<ExtForeignToplevelHandleV1, ForeignToplevelHandle>,
+    {
         for instance in &self.list_instances {
             let Ok(client) = self.dh.get_client(instance.id()) else {
                 continue;
             };
+            if !self.tells(&client, handle) {
+                continue;
+            }
 
             let Ok(toplevel) = client.create_resource::<ExtForeignToplevelHandleV1, _, D>(
                 &self.dh,
@@ -395,10 +444,6 @@ impl ForeignToplevelListState {
             instance.toplevel(&toplevel);
             handle.init_new_instance(toplevel);
         }
-
-        self.toplevels.push(handle.downgrade());
-
-        handle
     }
 
     /// Remove the toplevel, and send closed event if needed
@@ -470,6 +515,10 @@ where
             if handle.is_closed() {
                 // Cleanup closed handles
                 return false;
+            }
+
+            if !state.tells(client, &handle) {
+                return true;
             }
 
             if let Ok(toplevel) = client.create_resource::<ExtForeignToplevelHandleV1, _, D>(
