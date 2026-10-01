@@ -285,7 +285,6 @@ impl ForeignToplevelHandle {
 }
 
 /// State of the [ExtForeignToplevelListV1] global
-#[derive(Debug)]
 pub struct ForeignToplevelListState {
     global: GlobalId,
     toplevels: Vec<ForeignToplevelWeakHandle>,
@@ -294,6 +293,17 @@ pub struct ForeignToplevelListState {
     /// Which clients are told of which toplevels; every client of every
     /// toplevel when `None`.
     toplevel_filter: Option<Arc<dyn Fn(&Client, &ForeignToplevelHandle) -> bool + Send + Sync>>,
+}
+
+impl std::fmt::Debug for ForeignToplevelListState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForeignToplevelListState")
+            .field("global", &self.global)
+            .field("toplevels", &self.toplevels)
+            .field("list_instances", &self.list_instances)
+            .field("filtered", &self.toplevel_filter.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ForeignToplevelListState {
@@ -505,6 +515,7 @@ where
         let instance = data_init.init(resource, GlobalData);
 
         let state = state.foreign_toplevel_list_state();
+        let filter = state.toplevel_filter.clone();
 
         state.toplevels.retain(|handle| {
             let Some(handle) = handle.upgrade() else {
@@ -517,7 +528,7 @@ where
                 return false;
             }
 
-            if !state.tells(client, &handle) {
+            if !filter.as_ref().map_or(true, |filter| filter(client, &handle)) {
                 return true;
             }
 
