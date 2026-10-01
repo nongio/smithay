@@ -148,11 +148,16 @@ impl<D: SeatHandler> Inner<D> {
 /// Global data of WlSeat
 pub struct SeatGlobalData<D: SeatHandler> {
     arc: Arc<SeatRc<D>>,
+    /// Which clients the global is advertised to; every client when `None`.
+    filter: Option<Arc<dyn for<'c> Fn(&'c Client) -> bool + Send + Sync>>,
 }
 
 impl<D: SeatHandler> fmt::Debug for SeatGlobalData<D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SeatGlobalData").field("arc", &self.arc).finish()
+        f.debug_struct("SeatGlobalData")
+            .field("arc", &self.arc)
+            .field("filtered", &self.filter.is_some())
+            .finish()
     }
 }
 
@@ -172,9 +177,48 @@ impl<D: SeatHandler + 'static> SeatState<D> {
         <D as SeatHandler>::KeyboardFocus: WaylandFocus,
         N: Into<String>,
     {
+        self.create_wl_seat(display, name, None)
+    }
+
+    /// Create a new seat global advertised only to the clients `filter`
+    /// accepts.
+    ///
+    /// Otherwise as [`Self::new_wl_seat`]. A seat meant for one client, such
+    /// as a seat driven by an automation client, can thus be kept out of
+    /// every other client's registry; toolkits that take every seat they see
+    /// then never bind it.
+    pub fn new_wl_seat_with_filter<N, F>(&mut self, display: &DisplayHandle, name: N, filter: F) -> Seat<D>
+    where
+        D: GlobalDispatch<WlSeat, SeatGlobalData<D>> + SeatHandler + 'static,
+        <D as SeatHandler>::PointerFocus: WaylandFocus,
+        <D as SeatHandler>::KeyboardFocus: WaylandFocus,
+        N: Into<String>,
+        F: for<'c> Fn(&'c Client) -> bool + Send + Sync + 'static,
+    {
+        self.create_wl_seat(display, name, Some(Arc::new(filter)))
+    }
+
+    fn create_wl_seat<N>(
+        &mut self,
+        display: &DisplayHandle,
+        name: N,
+        filter: Option<Arc<dyn for<'c> Fn(&'c Client) -> bool + Send + Sync>>,
+    ) -> Seat<D>
+    where
+        D: GlobalDispatch<WlSeat, SeatGlobalData<D>> + SeatHandler + 'static,
+        <D as SeatHandler>::PointerFocus: WaylandFocus,
+        <D as SeatHandler>::KeyboardFocus: WaylandFocus,
+        N: Into<String>,
+    {
         let Seat { arc } = self.new_seat(name);
 
-        let global_id = display.create_global::<D, _, _>(9, SeatGlobalData { arc: arc.clone() });
+        let global_id = display.create_global::<D, _, _>(
+            9,
+            SeatGlobalData {
+                arc: arc.clone(),
+                filter,
+            },
+        );
         arc.inner.lock().unwrap().global = Some(global_id);
 
         Seat { arc }
@@ -347,5 +391,9 @@ where
         let mut inner = self.arc.inner.lock().unwrap();
         resource.capabilities(inner.compute_caps());
         inner.known_seats.push(resource.downgrade());
+    }
+
+    fn can_view(&self, client: &Client) -> bool {
+        self.filter.as_ref().map_or(true, |filter| filter(client))
     }
 }
