@@ -256,6 +256,29 @@ impl<D: SeatHandler + 'static> Seat<D> {
     pub fn global(&self) -> Option<GlobalId> {
         self.arc.inner.lock().unwrap().global.as_ref().cloned()
     }
+
+    /// Advertise this seat through one more global, to the clients `filter`
+    /// accepts.
+    ///
+    /// A client cannot be told of a global it was once filtered from, so a
+    /// seat that more clients should see from now on, such as an automation
+    /// seat given a place among the user's windows, is advertised to them
+    /// through a global of its own. Remove it with
+    /// [`DisplayHandle::remove_global`]; [`Self::global`] stays the seat's
+    /// first global.
+    pub fn create_global_with_filter<F>(&self, display: &DisplayHandle, filter: F) -> GlobalId
+    where
+        D: GlobalDispatch<WlSeat, SeatGlobalData<D>>,
+        F: for<'c> Fn(&'c Client) -> bool + Send + Sync + 'static,
+    {
+        display.create_global::<D, _, _>(
+            9,
+            SeatGlobalData {
+                arc: self.arc.clone(),
+                filter: Some(Arc::new(filter)),
+            },
+        )
+    }
 }
 
 /// User data for seat
