@@ -244,7 +244,12 @@ impl VulkanImage {
             memory: vk::DeviceMemory::null(),
             device: device.downgrade(),
             view: None,
-            dmabuf_exportable: modifiers.is_some() || dmabuf.is_some(),
+            // Only memory this image allocates itself is exportable. An
+            // imported dmabuf's allocation must not also declare export
+            // handle types: NVIDIA's driver then ignores the import and
+            // binds fresh, zeroed memory, so every render into or sample
+            // from the dmabuf goes to memory nobody else sees.
+            dmabuf_exportable: modifiers.is_some() && dmabuf.is_none(),
             dmabuf_plane_count: dmabuf.map(|dmabuf| dmabuf.num_planes() as u32).unwrap_or(0),
         };
 
